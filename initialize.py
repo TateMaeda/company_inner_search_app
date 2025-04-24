@@ -19,6 +19,8 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 import constants as ct
+import pandas as pd
+from langchain_core.documents import Document as LangchainDocument
 
 
 ############################################################
@@ -123,8 +125,8 @@ def initialize_retriever():
     
     # チャンク分割用のオブジェクトを作成
     text_splitter = CharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
+        chunk_size=ct.RAG_CHUNK_SIZE,
+        chunk_overlap=ct.RAG_CHUNK_OVERLAP,
         separator="\n"
     )
 
@@ -135,7 +137,7 @@ def initialize_retriever():
     db = Chroma.from_documents(splitted_docs, embedding=embeddings)
 
     # ベクターストアを検索するRetrieverの作成
-    st.session_state.retriever = db.as_retriever(search_kwargs={"k": 3})
+    st.session_state.retriever = db.as_retriever(search_kwargs={"k": ct.RAG_RETRIEVER_DOCUMENT_COUNT})
 
 
 def initialize_session_state():
@@ -214,10 +216,63 @@ def file_load(path, docs_all):
 
     # 想定していたファイル形式の場合のみ読み込む
     if file_extension in ct.SUPPORTED_EXTENSIONS:
-        # ファイルの拡張子に合ったdata loaderを使ってデータ読み込み
-        loader = ct.SUPPORTED_EXTENSIONS[file_extension](path)
-        docs = loader.load()
-        docs_all.extend(docs)
+        # CSVファイルの場合は、特別な処理を行う
+        if file_extension == ".csv":
+            csv_doc = load_csv_as_single_document(path)
+            docs_all.append(csv_doc)
+        else:
+            # CSVファイル以外は通常の読み込み方法を使用
+            loader = ct.SUPPORTED_EXTENSIONS[file_extension](path)
+            docs = loader.load()
+            docs_all.extend(docs)
+
+
+def load_csv_as_single_document(path):
+    """
+    CSVファイルを単一のドキュメントとして読み込む
+
+    Args:
+        path: CSVファイルパス
+
+    Returns:
+        CSVの内容を整形した単一のドキュメント
+    """
+    # ファイル名を取得
+    file_name = os.path.basename(path)
+    
+    try:
+        # CSVをpandasデータフレームとして読み込む
+        df = pd.read_csv(path, encoding='utf-8')
+        
+        # データフレームを見やすいテキストに変換
+        # ヘッダー情報を取得
+        headers = df.columns.tolist()
+        header_str = "ヘッダー: " + ", ".join(headers)
+        
+        # 各行を整形
+        rows_str = []
+        for index, row in df.iterrows():
+            row_str = f"エントリー #{index+1}:\n"
+            for col in headers:
+                row_str += f"  {col}: {row[col]}\n"
+            rows_str.append(row_str)
+        
+        # すべてのエントリーを結合
+        content = f"CSVファイル: {file_name}\n\n{header_str}\n\n" + "\n".join(rows_str)
+        
+        # LangchainのDocumentオブジェクトを作成
+        return LangchainDocument(
+            page_content=content,
+            metadata={"source": path, "file_name": file_name}
+        )
+    
+    except Exception as e:
+        # エラー発生時はエラーメッセージを含むドキュメントを返す
+        error_content = f"CSVファイル: {file_name}\n\nエラー: CSVの読み込みに失敗しました。{str(e)}"
+        return LangchainDocument(
+            page_content=error_content,
+            metadata={"source": path, "file_name": file_name}
+        )
 
 
 def adjust_string(s):
